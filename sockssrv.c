@@ -121,6 +121,32 @@ static struct addrinfo* addr_choose(struct addrinfo* list, union sockaddr_union*
 	return list;
 }
 
+static int try_connect_socks_target_addr(struct addrinfo *raddr, int port)
+{
+	int fd = socket(raddr->ai_family, SOCK_STREAM, 0);
+
+	/* failed to create a socket */
+	if (fd < 0) {
+		return -1;
+	}
+
+	/* couldn't find a socket family to bind to */
+	if(SOCKADDR_UNION_AF(&bind_addr) == raddr->ai_family &&
+	   bindtoip(fd, &bind_addr) == -1) {
+		close(fd);
+		return -1;
+	}
+
+	/* connect failed */
+	if(connect(fd, raddr->ai_addr, raddr->ai_addrlen) == -1) {
+		close(fd);
+		return -1;
+	}
+
+	/* all ok! */
+	return fd;
+}
+
 static int connect_socks_target(unsigned char *buf, size_t n, struct client *client) {
 	if(n < 5) return -EC_GENERAL_FAILURE;
 	if(buf[0] != 5) return -EC_GENERAL_FAILURE;
@@ -157,10 +183,9 @@ static int connect_socks_target(unsigned char *buf, size_t n, struct client *cli
 	/* there's no suitable errorcode in rfc1928 for dns lookup failure */
 	if(resolve(namebuf, port, &remote)) return -EC_GENERAL_FAILURE;
 	struct addrinfo* raddr = addr_choose(remote, &bind_addr);
-	int fd = socket(raddr->ai_family, SOCK_STREAM, 0);
+	int fd = try_connect_socks_target_addr(raddr, port);
+
 	if(fd == -1) {
-		eval_errno:
-		if(fd != -1) close(fd);
 		freeaddrinfo(remote);
 		switch(errno) {
 			case ETIMEDOUT:
@@ -182,11 +207,6 @@ static int connect_socks_target(unsigned char *buf, size_t n, struct client *cli
 			return -EC_GENERAL_FAILURE;
 		}
 	}
-	if(SOCKADDR_UNION_AF(&bind_addr) == raddr->ai_family &&
-	   bindtoip(fd, &bind_addr) == -1)
-		goto eval_errno;
-	if(connect(fd, raddr->ai_addr, raddr->ai_addrlen) == -1)
-		goto eval_errno;
 
 	freeaddrinfo(remote);
 	if(CONFIG_LOG) {
